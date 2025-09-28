@@ -1,17 +1,15 @@
 import { AccountMenu, ScheduleCallButton } from '@mundi/ee';
-import { BookOpen, Cloud, House, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { BookOpen, House, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import BuntingBirdSvg from '@/assets/bunting_bird.svg';
-import MDarkSvg from '@/assets/M-dark.svg';
-import MLightSvg from '@/assets/M-light.svg';
-import MundiDarkSvg from '@/assets/Mundi-dark.svg';
-import MundiLightSvg from '@/assets/Mundi-light.svg';
+import MDarkSvg from '@/assets/N-dark.svg';
+import MLightSvg from '@/assets/N-light.svg';
+import MundiDarkSvg from '@/assets/Nasa-dark.svg';
+import MundiLightSvg from '@/assets/Nasa-light.svg';
 import { Button } from '@/components/ui/button';
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -41,7 +39,7 @@ export function AppSidebar() {
       <SidebarHeader className="flex flex-col items-center p-4">
         {state === 'collapsed' ? (
           <>
-            <a href="https://mundi.ai/" target="_blank" className="w-8 h-8">
+            <a href="https://www.spaceappschallenge.org/2025/find-a-team/rooted/" target="_blank" className="w-10 h-10">
               <img src={MLightSvg} alt="M" className="w-full h-full dark:hidden" />
               <img src={MDarkSvg} alt="M" className="w-full h-full hidden dark:block" />
             </a>
@@ -58,7 +56,7 @@ export function AppSidebar() {
           </>
         ) : (
           <div className="flex items-center justify-between w-full">
-            <a href="https://docs.mundi.ai/" target="_blank" className="h-8">
+            <a href="https://www.spaceappschallenge.org/2025/find-a-team/rooted/" target="_blank" className="h-12">
               <img src={MundiLightSvg} alt="Mundi" className="h-full dark:hidden" />
               <img src={MundiDarkSvg} alt="Mundi" className="h-full hidden dark:block" />
             </a>
@@ -117,17 +115,9 @@ export function AppSidebar() {
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton asChild tooltip="Documentation">
-                  <a href="https://docs.mundi.ai" target="_blank">
+                  <a href="https://github.com/jjestrada2/farmane/blob/main/README.md" target="_blank">
                     <BookOpen className="w-4 h-4 mr-2" />
                     <span className="text-sm">Documentation</span>
-                  </a>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip="Mundi Cloud">
-                  <a href="https://app.mundi.ai" target="_blank">
-                    <Cloud className="w-4 h-4 mr-2" />
-                    <span className="text-sm">Mundi Cloud</span>
                   </a>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -140,17 +130,6 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="p-1 border-t border-border border-gray-700">
-        <div className="text-center">
-          <a href="https://buntinglabs.com" target="_blank" className="text-muted-foreground text-xs hover:underline">
-            {state === 'collapsed' ? (
-              <img src={BuntingBirdSvg} alt="Bunting Labs" className="w-6 h-6 mx-auto my-2" />
-            ) : (
-              '© Bunting Labs, Inc. 2025'
-            )}
-          </a>
-        </div>
-      </SidebarFooter>
     </Sidebar>
   );
 }
