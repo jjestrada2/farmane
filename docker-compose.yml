@@ -124,3 +124,20 @@ services:
       timeout: 30s
       retries: 3
       start_period: 10s
+
+  frontend:
+    image: node:20
+    working_dir: /app/frontendts
+    command: sh -c "npm install --legacy-peer-deps && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_WEBSITE_DOMAIN=http://localhost:8000
+      - VITE_EMAIL_VERIFICATION=disable
+      - BACKEND_URL=http://app:8000
+    volumes:
+      - "./frontendts:/app/frontendts"
+      - /app/frontendts/node_modules
+    depends_on:
+      app:
+        condition: service_started
