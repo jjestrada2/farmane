@@ -1,7 +1,7 @@
 'use client';
 
 import {
-  Brain,
+  Flower,
   Brush,
   ChevronDown,
   ChevronUp,
@@ -248,11 +248,11 @@ export default function VersionVisualization({
 
   const getNodePresentation = useCallback(
     (node: MapNode) => {
-      const editor: string = node.fork_reason == 'ai_edit' ? 'Kue' : 'You';
+      const editor: string = node.fork_reason == 'ai_edit' ? 'Farmane' : 'You';
       const icon: React.ReactNode =
-        node.fork_reason == 'ai_edit' ? <Brain className="w-4 h-4 text-black" /> : <User className="w-4 h-4 text-black" />;
-      const color: string = node.map_id === currentMapId ? 'bg-green-400' : 'bg-gray-300';
-      const textColor: string = node.map_id === currentMapId ? 'text-green-400' : 'text-gray-300';
+        node.fork_reason == 'ai_edit' ? <Flower className="w-4 h-4 text-black" /> : <User className="w-4 h-4 text-black" />;
+      const color: string = node.map_id === currentMapId ? 'bg-[#EAF007]' : 'bg-gray-300';
+      const textColor: string = node.map_id === currentMapId ? 'text-[#EAF007]' : 'text-gray-300';
       return { editor, icon, color, textColor };
     },
     [currentMapId],
@@ -378,7 +378,7 @@ export default function VersionVisualization({
   };
 
   return conversationsEnabled ? (
-    <div className="z-30 max-h-screen h-full w-96 bg-white dark:bg-gray-800 shadow-md flex flex-col text-halfway-sm-xs">
+    <div className="z-30 max-h-screen h-full w-[50rem] bg-white dark:bg-[#07173F] shadow-md flex flex-col text-halfway-sm-xs">
       <div className="flex-1 overflow-auto p-2">
         <div className="mb-4 bg-gray-700 rounded-md">
           <div className="p-2 flex items-center justify-between">
@@ -500,15 +500,15 @@ export default function VersionVisualization({
                 <div className="flex-4 flex justify-end items-center">
                   {activeActions.length > 0 ? (
                     <div className="text-halfway-sm-xs text-gray-400 whitespace-nowrap">
-                      <span className="text-gray-300 text-right">Kue is thinking...</span>
+                      <span className="text-gray-300 text-right">Farmane is thinking...</span>
                     </div>
                   ) : null}
                 </div>
 
                 {/* Center - Timeline dot */}
                 <div className="relative z-10 flex flex-col items-center">
-                  <div className={`flex items-center justify-center w-6 h-6 rounded-full bg-green-400`}>
-                    <Brain className="w-4 h-4 text-black animate-spin" />
+                  <div className={`flex items-center justify-center w-6 h-6 rounded-full bg-[#EAF007]`}>
+                    <Flower className="w-4 h-4 text-black animate-spin" />
                   </div>
                 </div>
               </div>

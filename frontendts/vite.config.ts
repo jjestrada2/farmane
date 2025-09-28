@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => ({
   base: '/',
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:8000', ws: true, changeOrigin: true },
+      '/api': { target: process.env.BACKEND_URL ?? 'http://localhost:8000', ws: true, changeOrigin: true },
     },
   },
   build: {

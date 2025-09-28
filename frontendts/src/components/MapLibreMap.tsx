@@ -1256,7 +1256,7 @@ export default function MapLibreMap({
         {/* Message display component - always show parent div, animate height */}
         {(criticalErrors.length > 0 || activeActions.length > 0 || lastAssistantMsg) && (
           <div
-            className={`z-30 absolute bottom-12 mb-[34px] left-3/5 transform -translate-x-1/2 w-4/5 max-w-lg ${assistantExpanded ? 'max-h-[80vh]' : 'max-h-40'} overflow-auto rounded-t-md shadow-md p-2 text-sm transition-all duration-300 h-auto ${errors.length > 0 ? 'border-red-800' : ''}`}
+            className={`z-30 absolute bottom-12 mb-[34px] left-1/2 transform -translate-x-1/2 w-4/5 max-w-lg ${assistantExpanded ? 'max-h-[80vh]' : 'max-h-40'} overflow-auto rounded-t-md shadow-md p-2 text-sm transition-all duration-300 h-auto ${errors.length > 0 ? 'border-red-800' : ''}`}
             style={{ backgroundColor: 'rgba(30, 41, 57, 0.9)' }}
           >
             {/* Expand/contract toggle */}
@@ -1313,11 +1313,11 @@ export default function MapLibreMap({
           </div>
         )}
         <div
-          className={`z-30 absolute bottom-12 left-3/5 transform -translate-x-1/2 w-4/5 max-w-xl bg-white dark:bg-gray-800 shadow-md focus-within:ring-2 focus-within:ring-white/30 flex items-center border border-input bg-input rounded-md`}
+          className={`z-30 absolute bottom-12 left-1/2 transform -translate-x-1/2 w-4/5 max-w-xl bg-white dark:bg-gray-800 shadow-md focus-within:ring-2 focus-within:ring-white/30 flex items-center border border-input bg-input rounded-md`}
         >
           <Input
             className={`flex-1 border-none shadow-none !bg-transparent focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
-            placeholder={lastUserMsg || 'Type in for Kue to do something...'}
+            placeholder={lastUserMsg || 'Type in for Farmane to do something...'}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -1330,7 +1330,7 @@ export default function MapLibreMap({
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Kue can see your selected feature</p>
+                <p>Farmane can see your selected feature</p>
               </TooltipContent>
             </Tooltip>
           )}
