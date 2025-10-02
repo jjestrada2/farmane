@@ -796,6 +796,25 @@ async def process_chat_interaction_task(
                     {
                         "type": "function",
                         "function": {
+                            "name": "bloom_study",
+                            "description": "Analyze the last bloom event and predict the next bloom for almond crops near a given address.",
+                            "strict": True,
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "address": {
+                                        "type": "string",
+                                        "description": "Street address or location to analyze (e.g., '123 Main St, City, State').",
+                                    },
+                                },
+                                "required": ["address"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    {
+                        "type": "function",
+                        "function": {
                             "name": "add_layer_to_map",
                             "description": "Shows a newly created or existing unattached layer on the user's current map and layer list. Use this after a geoprocessing step that creates a layer, or if the user asks to see an existing layer that isn't currently on their map.",
                             "parameters": {
@@ -1047,7 +1066,142 @@ async def process_chat_interaction_task(
                         {"tool_name": function_name},
                     )
                     with tracer.start_as_current_span(f"kue.{function_name}") as span:
-                        if function_name == "new_layer_from_postgis":
+                        if function_name == "bloom_study":
+                            address = tool_args.get("address")
+
+                            async with kue_ephemeral_action(
+                                conversation.id,
+                                "Analyzing bloom events...",
+                            ):
+                                if not address or not isinstance(address, str) or not address.strip():
+                                    tool_result = {
+                                        "status": "error",
+                                        "error": "Missing or invalid 'address'. Provide a non-empty text address.",
+                                    }
+                                else:
+                                    cleaned_address = address.strip()
+
+                                    # 1) Try to load an existing study for this user+address
+                                    cached = None
+                                    try:
+                                        cached = await conn.fetchrow(
+                                            """
+                                            SELECT
+                                                date_of_max_ebi,
+                                                ebi_value,
+                                                image_url,
+                                                predicted_bloom_start,
+                                                predicted_bloom_peak,
+                                                confidence
+                                            FROM bloom_studies
+                                            WHERE owner_uuid = $1
+                                            AND address = $2
+                                            ORDER BY created_on DESC
+                                            LIMIT 1
+                                            """,
+                                            user_id,
+                                            cleaned_address,
+                                        )
+                                    except Exception:
+                                        cached = None  # table may not exist yet; ignore and proceed
+
+                                    if cached:
+                                        tool_result = {
+                                            "status": "success",
+                                            "address": cleaned_address,
+                                            "date_of_max_ebi": cached.get("date_of_max_ebi"),
+                                            "ebi_value": cached.get("ebi_value"),
+                                            "image_url": cached.get("image_url"),
+                                            "predicted_bloom_start": cached.get("predicted_bloom_start"),
+                                            "predicted_bloom_peak": cached.get("predicted_bloom_peak"),
+                                            "confidence": cached.get("confidence"),
+                                            "message": "Loaded cached bloom study.",
+                                        }
+                                    else:
+                                        # 2) No cache → call detection and prediction endpoints
+                                        base_url = str(request.base_url).rstrip("/")
+                                        try:
+                                            async with httpx.AsyncClient(timeout=30.0) as client:
+                                                det_resp = await client.post(
+                                                    f"{base_url}/bloom-detection",
+                                                    json={"address": cleaned_address},
+                                                )
+                                                pred_resp = await client.post(
+                                                    f"{base_url}/bloom-prediction",
+                                                    json={"address": cleaned_address},
+                                                )
+
+                                            if det_resp.status_code != 200:
+                                                tool_result = {
+                                                    "status": "error",
+                                                    "error": f"/bloom-detection failed: {det_resp.status_code} - {det_resp.text}",
+                                                }
+                                            elif pred_resp.status_code != 200:
+                                                tool_result = {
+                                                    "status": "error",
+                                                    "error": f"/bloom-prediction failed: {pred_resp.status_code} - {pred_resp.text}",
+                                                }
+                                            else:
+                                                detection = det_resp.json()  # expects: date_of_max_ebi, ebi_value, image_url
+                                                prediction = pred_resp.json()  # expects: predicted_bloom_start, predicted_bloom_peak, confidence
+
+                                                # 3) Combine and return
+                                                tool_result = {
+                                                    "status": "success",
+                                                    "address": cleaned_address,
+                                                    "date_of_max_ebi": detection.get("date_of_max_ebi"),
+                                                    "ebi_value": detection.get("ebi_value"),
+                                                    "image_url": detection.get("image_url"),
+                                                    "predicted_bloom_start": prediction.get("predicted_bloom_start"),
+                                                    "predicted_bloom_peak": prediction.get("predicted_bloom_peak"),
+                                                    "confidence": prediction.get("confidence"),
+                                                }
+
+                                                # 4) Cache the result for future calls (best-effort)
+                                                try:
+                                                    await conn.execute(
+                                                        """
+                                                        INSERT INTO bloom_studies
+                                                        (id, owner_uuid, map_id, conversation_id, address,
+                                                        date_of_max_ebi, ebi_value, image_url,
+                                                        predicted_bloom_start, predicted_bloom_peak, confidence,
+                                                        created_on)
+                                                        VALUES
+                                                        ($1, $2, $3, $4, $5,
+                                                        $6, $7, $8,
+                                                        $9, $10, $11,
+                                                        CURRENT_TIMESTAMP)
+                                                        """,
+                                                        generate_id(prefix="B"),
+                                                        user_id,
+                                                        map_id,
+                                                        conversation.id,
+                                                        cleaned_address,
+                                                        detection.get("date_of_max_ebi"),
+                                                        detection.get("ebi_value"),
+                                                        detection.get("image_url"),
+                                                        prediction.get("predicted_bloom_start"),
+                                                        prediction.get("predicted_bloom_peak"),
+                                                        prediction.get("confidence"),
+                                                    )
+                                                except Exception:
+                                                    # Ignore cache write failures to avoid breaking user flow
+                                                    pass
+                                        except Exception as e:
+                                            tool_result = {
+                                                "status": "error",
+                                                "error": f"Bloom study failed: {str(e)}",
+                                            }
+
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+                        elif function_name == "new_layer_from_postgis":
                             postgis_connection_id = tool_args.get(
                                 "postgis_connection_id"
                             )
