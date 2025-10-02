@@ -26,6 +26,7 @@ from src.routes import (
     websocket,
     conversation_routes,
 )
+from src.routes import bloom_routes
 from src.routes.postgres_routes import basemap_router
 from src.routes.layer_router import layer_router
 from src.routes.attribute_table import attribute_table_router
@@ -91,6 +92,11 @@ app.include_router(
     conversation_routes.router,
     prefix="/api",
     tags=["Conversations"],
+)
+app.include_router(
+    bloom_routes.router,
+    prefix="/api",
+    tags=["Bloom"],
 )
 
 
