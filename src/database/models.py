@@ -25,6 +25,8 @@ from sqlalchemy import (
     BIGINT,
     Float,
     ForeignKey,
+    Date,
+    Index,
 )
 
 import json
@@ -434,4 +436,54 @@ class MundiChatCompletionMessage(Base):
     map = relationship("MundiMap", back_populates="chat_completion_messages")
     conversation = relationship(
         "Conversation", back_populates="chat_completion_messages"
+    )
+
+#---------------------New Tables for Bloom Prediction-----------------------#
+
+class BloomObservation(Base):
+    __tablename__ = "bloom_observations"
+
+    id = Column(Integer, primary_key=True)
+    map_id = Column(String(12), ForeignKey("user_mundiai_maps.id"), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    date_of_max_ebi = Column(Date, nullable=False)
+    ebi_value = Column(Float, nullable=True)
+    image_url = Column(Text, nullable=True)
+    created_at = Column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+    map = relationship("MundiMap")
+
+    __table_args__ = (
+        Index("ix_bloom_observations_map_lat_lon", "map_id", "latitude", "longitude"),
+        Index("ix_bloom_observations_map_date", "map_id", "date_of_max_ebi"),
+    )
+
+
+class BloomPrediction(Base):
+    __tablename__ = "bloom_predictions"
+
+    id = Column(Integer, primary_key=True)
+    map_id = Column(String(12), ForeignKey("user_mundiai_maps.id"), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    predicted_bloom_start = Column(Date, nullable=False)
+    predicted_bloom_peak = Column(Date, nullable=False)
+    confidence = Column(Float, nullable=True)
+    model_version = Column(String(64), nullable=True)
+    created_at = Column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+    map = relationship("MundiMap")
+
+    __table_args__ = (
+        Index("ix_bloom_predictions_map_lat_lon", "map_id", "latitude", "longitude"),
+        Index("ix_bloom_predictions_map_peak", "map_id", "predicted_bloom_peak"),
     )
