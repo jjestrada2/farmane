@@ -7,3 +7,7 @@ src/conftest.py
 *.aux.xml
 frontendts/README.md 
 *.egg-info/
+
+# Google Earth Engine credentials
+vaulted-channel-*.json
+src/services/*.json
