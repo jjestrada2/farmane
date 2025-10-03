@@ -78,6 +78,21 @@ from src.utils import get_async_s3_client, get_bucket_name
 from src.dependencies.postgis import get_postgis_provider
 from src.dependencies.layer_describer import LayerDescriber, get_layer_describer
 from src.dependencies.chat_completions import ChatArgsProvider, get_chat_args_provider
+
+# Ensure tool results with dates/decimals serialize cleanly for tool messages
+def _json_default(o):
+    try:
+        # Handle datetime/date-like objects
+        iso = getattr(o, "isoformat", None)
+        if callable(iso):
+            return iso()
+    except Exception:
+        pass
+    # Fallback to string for any non-serializable types (e.g., Decimal)
+    return str(o)
+
+def json_dumps_safe(obj) -> str:
+    return json.dumps(obj, default=_json_default)
 from src.dependencies.map_state import (
     MapStateProvider,
     get_map_state_provider,
@@ -117,6 +132,38 @@ redis = Redis(
     port=int(os.environ["REDIS_PORT"]),
     decode_responses=True,
 )
+
+
+async def geocode_address(address: str) -> tuple[float, float] | None:
+    """Resolve a text address to (latitude, longitude).
+
+    Uses Nominatim by default. Override with GEOCODER_URL and GEOCODER_USER_AGENT.
+    Returns None if not found or on error.
+    """
+    if not address or not isinstance(address, str):
+        return None
+    try:
+        url = os.environ.get(
+            "GEOCODER_URL", "https://nominatim.openstreetmap.org/search"
+        )
+        headers = {
+            "User-Agent": os.environ.get(
+                "GEOCODER_USER_AGENT", "mundi.ai/1.0 (geocode)"
+            )
+        }
+        params = {"q": address, "format": "jsonv2", "limit": 1}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, params=params, headers=headers)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data:
+            return None
+        lat = float(data[0]["lat"])  # type: ignore[index]
+        lon = float(data[0]["lon"])  # type: ignore[index]
+        return (lat, lon)
+    except Exception:
+        return None
 
 
 async def label_conversation_inline(conversation_id: int):
@@ -793,6 +840,25 @@ async def process_chat_interaction_task(
                             },
                         },
                     },
+                      {
+                        "type": "function",
+                        "function": {
+                            "name": "bloom_study",
+                            "description": "Analyze the last bloom event and predict the next bloom for almond crops near a given address.",
+                            "strict": True,
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "address": {
+                                        "type": "string",
+                                        "description": "Street address or location to analyze (e.g., '123 Main St, City, State').",
+                                    },
+                                },
+                                "required": ["address"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
                     {
                         "type": "function",
                         "function": {
@@ -1011,7 +1077,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 ),
                             )
                             continue
@@ -1037,7 +1103,7 @@ async def process_chat_interaction_task(
                             ChatCompletionToolMessageParam(
                                 role="tool",
                                 tool_call_id=tool_call.id,
-                                content=json.dumps(tool_result),
+                                content=json_dumps_safe(tool_result),
                             ),
                         )
                         continue
@@ -1046,8 +1112,123 @@ async def process_chat_interaction_task(
                         "kue.tool_call_started",
                         {"tool_name": function_name},
                     )
+
                     with tracer.start_as_current_span(f"kue.{function_name}") as span:
-                        if function_name == "new_layer_from_postgis":
+
+                        if function_name == "bloom_study":
+                            address = tool_args.get("address")
+                           
+
+                            async with kue_ephemeral_action(
+                                conversation.id,
+                                "Analyzing bloom events...",
+                            ):
+                                if not address or not isinstance(address, str) or not address.strip():
+                                    tool_result = {
+                                        "status": "error",
+                                        "error": "Missing or invalid 'address'. Provide a non-empty text address.",
+                                    }
+                                else:
+                                    cleaned_address = address.strip()
+
+                                    coords = await geocode_address(cleaned_address)
+                                    if not coords:
+                                        tool_result = {
+                                            "status": "error",
+                                            "error": "Could not geocode address to coordinates",
+                                        }
+                                    else:
+                                        latitude, longitude = coords
+                                        print(f"Geocoded address to {latitude}, {longitude}")
+                                        try:
+                                            prediction_row = await conn.fetchrow(
+                                                """
+                                                  SELECT
+                                                    predicted_bloom_start ,
+                                                    predicted_bloom_peak,
+                                                    confidence
+                                                FROM bloom_predictions
+                                                WHERE latitude = $1
+                                                  AND longitude = $2
+                                                  ORDER BY created_at DESC
+                                                LIMIT 1
+                                                """,
+                                                latitude,
+                                                longitude,
+                                            )
+
+                                            print(f"Prediction row: {prediction_row}")
+
+                                            observation_row = await conn.fetchrow(
+                                                """
+                                                SELECT
+                                                    date_of_max_ebi,
+                                                    ebi_value,
+                                                    image_url
+                                                FROM bloom_observations
+                                                WHERE latitude = $1
+                                                  AND longitude = $2
+                                                ORDER BY created_at DESC
+                                                LIMIT 1
+                                                """,
+                                                latitude,
+                                                longitude,
+                                            )
+
+                                            print(f"Observation row: {observation_row}")
+
+                                            prediction = (
+                                                {
+                                                    "prediction_bloom_start": prediction_row["predicted_bloom_start"],
+                                                    "prediction_bloom_peak": prediction_row["predicted_bloom_peak"],
+                                                    "confidence": prediction_row["confidence"],
+                                                }
+                                                if prediction_row
+                                                else None
+                                                                                                    
+                                            )
+                                            print(f"Prediction: {prediction}")
+                                            observation = (
+                                                {
+                                                    "date_of_max_ebi": observation_row["date_of_max_ebi"],
+                                                    "ebi_value": observation_row["ebi_value"],
+                                                    "image_url": observation_row["image_url"],
+                                                }
+                                                if observation_row
+                                                else None
+                                            )
+                                            print(f"Observation: {observation}")
+                                            
+                                            tool_result = {
+                                                "status": "success",
+                                                "address": cleaned_address,
+                                                "latitude": latitude,
+                                                "longitude": longitude,
+                                                "prediction": prediction,
+                                                "observation": observation,
+                                                "message": (
+                                                    "No recent prediction or observation found for these coordinates"
+                                                    if not prediction and not observation
+                                                    else "Retrieved latest prediction and/or observation"
+                                                ),
+                                            }
+                                            print(f"Tool result: {tool_result}")
+                                            
+                                        except Exception as e:
+                                            tool_result = {
+                                                "status": "error",
+                                                "error": f"Failed to load bloom data: {str(e)}",
+                                            }
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json_dumps_safe(tool_result),
+                                )
+                            )
+
+                        elif function_name == "new_layer_from_postgis":
                             postgis_connection_id = tool_args.get(
                                 "postgis_connection_id"
                             )
@@ -1360,7 +1541,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 )
                             )
                         elif function_name == "add_layer_to_map":
@@ -1417,7 +1598,7 @@ async def process_chat_interaction_task(
                                     ChatCompletionToolMessageParam(
                                         role="tool",
                                         tool_call_id=tool_call.id,
-                                        content=json.dumps(tool_result),
+                                        content=json_dumps_safe(tool_result),
                                     )
                                 )
                         elif function_name == "query_duckdb_sql":
@@ -1445,7 +1626,7 @@ async def process_chat_interaction_task(
                                     ChatCompletionToolMessageParam(
                                         role="tool",
                                         tool_call_id=tool_call.id,
-                                        content=json.dumps(tool_result),
+                                        content=json_dumps_safe(tool_result),
                                     )
                                 )
                                 continue
@@ -1500,7 +1681,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 )
                             )
                         elif function_name == "set_layer_style":
@@ -1571,7 +1752,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 ),
                             )
                         elif function_name == "query_postgis_database":
@@ -1622,7 +1803,7 @@ async def process_chat_interaction_task(
                                                     ChatCompletionToolMessageParam(
                                                         role="tool",
                                                         tool_call_id=tool_call.id,
-                                                        content=json.dumps(tool_result),
+                                                        content=json_dumps_safe(tool_result),
                                                     ),
                                                 )
                                                 continue
@@ -1636,7 +1817,7 @@ async def process_chat_interaction_task(
                                                 ChatCompletionToolMessageParam(
                                                     role="tool",
                                                     tool_call_id=tool_call.id,
-                                                    content=json.dumps(tool_result),
+                                                    content=json_dumps_safe(tool_result),
                                                 ),
                                             )
                                             continue
@@ -1732,7 +1913,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 ),
                             )
 
@@ -1748,7 +1929,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 ),
                             )
                         else:
