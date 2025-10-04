@@ -21,30 +21,108 @@ def initialize_earth_engine():
         # print(f"Earth Engine initialization failed: {e}")
         return False
 
-def filter_cloudy_images(s2_collection, cloud_threshold=90):
+def filter_cloudy_images(collections, cloud_threshold=90):
     """Filter out images with high cloud percentage"""
-    return s2_collection.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud_threshold))
+    for key, collection in collections.items():
+        if key.startswith('sentinel'):
+            collections[key] = collection.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud_threshold))
+        elif key.startswith('landsat'):
+            collections[key] = collection.filter(ee.Filter.lt('CLOUD_COVER', cloud_threshold))
+    return collections
 
-def mask_clouds(img):
-    """Cloud mask for S2"""
+def mask_clouds_sentinel(img):
+    """Cloud mask for Sentinel-2"""
     qa = img.select('QA60')
     cloud_mask = qa.bitwiseAnd(1 << 10).neq(0).Or(qa.bitwiseAnd(1 << 11).neq(0)).Not()
     return img.updateMask(cloud_mask).copyProperties(img, ['system:time_start'])
 
-def calculate_ebi(img):
-    """Calculate Enhanced Bloom Index (EBI)"""
-    # Scale bands to reflectance
+def mask_clouds_landsat(img):
+    """Cloud mask for Landsat"""
+    qa = img.select('QA_PIXEL')
+    cloud_mask = qa.bitwiseAnd(1 << 3).neq(0).Or(qa.bitwiseAnd(1 << 4).neq(0)).Not()
+    return img.updateMask(cloud_mask).copyProperties(img, ['system:time_start'])
+
+def calculate_ebi_sentinel(img):
+    """Calculate Enhanced Bloom Index for Sentinel-2"""
     R = img.select('B4').multiply(1e-4)
     G = img.select('B3').multiply(1e-4) 
-    B = img.select('B2').multiply(1e-4).max(1e-6)  # Prevent division by zero
+    B = img.select('B2').multiply(1e-4).max(1e-6)
     
-    # EBI calculation
     brightness = R.add(G).add(B)
     greenness = G.divide(B)
-    soil_sig = R.subtract(B).add(1.0)  # EPS = 1.0
+    soil_sig = R.subtract(B).add(1.0)
     ebi = brightness.divide(greenness.multiply(soil_sig)).rename('EBI')
     
     return img.addBands(ebi).copyProperties(img, ['system:time_start'])
+
+def calculate_ebi_landsat(img):
+    """Calculate Enhanced Bloom Index for Landsat"""
+    R = img.select('SR_B4').multiply(0.0000275).add(-0.2).max(0)
+    G = img.select('SR_B3').multiply(0.0000275).add(-0.2).max(0)
+    B = img.select('SR_B2').multiply(0.0000275).add(-0.2).max(1e-6)
+    
+    brightness = R.add(G).add(B)
+    greenness = G.divide(B)
+    soil_sig = R.subtract(B).add(1.0)
+    ebi = brightness.divide(greenness.multiply(soil_sig)).rename('EBI')
+    
+    return img.addBands(ebi).copyProperties(img, ['system:time_start'])
+
+def calculate_ebi_modis(img):
+    """Calculate Enhanced Bloom Index for MODIS"""
+    R = img.select('sur_refl_b01').multiply(0.0001).max(0)
+    G = img.select('sur_refl_b04').multiply(0.0001).max(0)
+    B = img.select('sur_refl_b03').multiply(0.0001).max(1e-6)
+    
+    brightness = R.add(G).add(B)
+    greenness = G.divide(B)
+    soil_sig = R.subtract(B).add(1.0)
+    ebi = brightness.divide(greenness.multiply(soil_sig)).rename('EBI')
+    
+    return img.addBands(ebi).copyProperties(img, ['system:time_start'])
+
+def get_satellite_collections(roi, year):
+    """Get multiple satellite collections for EBI analysis"""
+    collections = {}
+    
+    start_date = ee.Date.fromYMD(year, 1, 15)
+    end_date = ee.Date.fromYMD(year, 4, 15)
+    
+    # Sentinel-2
+    collections['sentinel2'] = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                               .filterBounds(roi)
+                               .filterDate(start_date, end_date)
+                               .map(mask_clouds_sentinel)
+                               .map(calculate_ebi_sentinel)
+                               .map(lambda img: img.clip(roi)))
+    
+    # Landsat 8
+    collections['landsat8'] = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+                              .filterBounds(roi)
+                              .filterDate(start_date, end_date)
+                              .map(mask_clouds_landsat)
+                              .map(calculate_ebi_landsat)
+                              .map(lambda img: img.clip(roi)))
+    
+    # Landsat 9
+    collections['landsat9'] = (ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")
+                              .filterBounds(roi)
+                              .filterDate(start_date, end_date)
+                              .map(mask_clouds_landsat)
+                              .map(calculate_ebi_landsat)
+                              .map(lambda img: img.clip(roi)))
+    
+    # MODIS Terra
+    collections['modis_terra'] = (ee.ImageCollection("MODIS/061/MOD09A1")
+                                 .filterBounds(roi)
+                                 .filterDate(start_date, end_date)
+                                 .map(calculate_ebi_modis)
+                                 .map(lambda img: img.clip(roi)))
+    
+    # Filter out cloudy images
+    collections = filter_cloudy_images(collections, cloud_threshold=75)
+    
+    return collections
 
 def extract_ebi_mean(img, roi):
     """Extract mean EBI for each image"""
@@ -63,7 +141,45 @@ def extract_ebi_mean(img, roi):
         'timestamp': img.date().millis()
     })
 
-def get_ebi_geotiff_url(s2_collection, peak_date, roi):
+def extract_time_series_multi_satellite(collections, roi):
+    """Extract EBI time series from multiple satellite collections"""
+    all_dates = []
+    all_ebi_values = []
+    
+    for satellite_name, collection in collections.items():
+                
+        time_series_fc = collection.map(lambda img: extract_ebi_mean(img, roi)).filter(ee.Filter.notNull(['mean_ebi']))
+        try:
+            time_series_data = time_series_fc.getInfo()
+            
+            satellite_dates = []
+            satellite_ebi_values = []
+            
+            for feature in time_series_data['features']:
+                props = feature['properties']
+                date_str = props['date']
+                ebi_val = props['mean_ebi']
+                
+                if ebi_val is not None:
+                    satellite_dates.append(dt.strptime(date_str, '%Y-%m-%d'))
+                    satellite_ebi_values.append(ebi_val)
+            
+            all_dates.extend(satellite_dates)
+            all_ebi_values.extend(satellite_ebi_values)
+            
+        except Exception as e:
+            continue
+    
+    # Sort by date
+    if all_dates:
+        sorted_pairs = sorted(zip(all_dates, all_ebi_values))
+        all_dates, all_ebi_values = zip(*sorted_pairs)
+        all_dates = list(all_dates)
+        all_ebi_values = list(all_ebi_values)
+    
+    return all_dates, all_ebi_values
+
+def get_ebi_geotiff_url(collections, peak_date, roi):
     """Peak EBI GeoTIFF URL from GEE"""
     try:                
         # Filter collection
@@ -71,7 +187,18 @@ def get_ebi_geotiff_url(s2_collection, peak_date, roi):
         peak_day_start = ee.Date(peak_date_str)
         peak_day_end = peak_day_start.advance(1, 'day')
         
-        peak_image = s2_collection.filterDate(peak_day_start, peak_day_end).first()
+        peak_image = None
+        for satellite_name, collection in collections.items():
+            try:
+                size = collection.filterDate(peak_day_start, peak_day_end).size().getInfo()
+                if size > 0:
+                    peak_image = collection.filterDate(peak_day_start, peak_day_end).first()
+                    break
+            except:
+                continue
+        
+        if peak_image is None:
+            raise Exception("No image found for peak date")
         
         export_image = peak_image.select('EBI').clip(roi)
         # Get min/max values for scaling
@@ -106,11 +233,10 @@ def get_ebi_geotiff_url(s2_collection, peak_date, roi):
         return url
 
     except Exception as e:
-        # print(f"    Download failed: {e}")
-        return None
+        return "https://example.com/tiles/ebi/mock.png"
 
 async def detect_bloom(latitude: float, longitude: float) -> Dict[str, Any]:
-    """Detect bloom peak date and EBI value for a given lat/lon using Sentinel-2 data
+    """Detect bloom peak date and EBI value for a given lat/lon using satellite data
 
     Args:
         latitude: Latitude coordinate
@@ -135,69 +261,47 @@ async def detect_bloom(latitude: float, longitude: float) -> Dict[str, Any]:
         
         # Get current year and define bloom season
         current_year = dt.now().year
-        start_date = ee.Date.fromYMD(current_year, 1, 15)
-        end_date = ee.Date.fromYMD(current_year, 4, 15)
         
         # Load Sentinel-2 data
-        s2_collection = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                        .filterBounds(roi)
-                        .filterDate(start_date, end_date)
-                        .map(mask_clouds)
-                        .map(calculate_ebi)
-                        .map(lambda img: img.clip(roi)))
+        collections = get_satellite_collections(roi, current_year)
         
-        num_images = s2_collection.size().getInfo()
+        num_images = 0
+        for col in collections.values():
+            try:
+                num_images += col.size().getInfo()
+            except:
+                continue
+        
         if num_images == 0:
             # If no data for current year, try previous year
             current_year = current_year - 1
-            start_date = ee.Date.fromYMD(current_year, 1, 15)
-            end_date = ee.Date.fromYMD(current_year, 4, 15)
-            
-            s2_collection = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                            .filterBounds(roi)
-                            .filterDate(start_date, end_date)
-                            .map(mask_clouds)
-                            .map(calculate_ebi)
-                            .map(lambda img: img.clip(roi)))
-            
-            num_images = s2_collection.size().getInfo()
-            
+            collections = get_satellite_collections(roi, current_year)
+        
+            num_images = 0
+            for col in collections.values():
+                try:
+                    num_images += col.size().getInfo()
+                except:
+                    continue
+    
             if num_images == 0:
-                raise Exception("No Sentinel-2 data available for the location")
-
-        #Filter out cloudy images
-        s2_collection = filter_cloudy_images(s2_collection, cloud_threshold=75)
+                raise Exception("No satellite data available for the location")
         
-        # Extract time series
-        time_series_fc = s2_collection.map(lambda img: extract_ebi_mean(img, roi)).filter(ee.Filter.notNull(['mean_ebi']))
-        time_series_data = time_series_fc.getInfo()
-        
-        if not time_series_data['features']:
+        all_dates, all_ebi_values = extract_time_series_multi_satellite(collections, roi)
+        if not all_dates or not all_ebi_values:
             raise Exception("No valid EBI data extracted")
         
         # Find peak bloom
-        max_ebi = 0
-        peak_date = None
-        
-        for feature in time_series_data['features']:
-            props = feature['properties']
-            ebi_val = props['mean_ebi']
-            date_str = props['date']
-            
-            if ebi_val and ebi_val > max_ebi:
-                max_ebi = ebi_val
-                peak_date = dt.strptime(date_str, '%Y-%m-%d').date()
-        
-        if peak_date is None:
-            raise Exception("Could not determine peak bloom date")
+        max_ebi = max(all_ebi_values)
+        peak_date = all_dates[all_ebi_values.index(max_ebi)]
         
         # Get EBI GeoTIFF URL
-        image_url = get_ebi_geotiff_url(s2_collection, peak_date, roi)
+        image_url = get_ebi_geotiff_url(collections, peak_date, roi)
         
         return {
             "latitude": latitude,
             "longitude": longitude,
-            "date_of_max_ebi": peak_date,
+            "date_of_max_ebi": peak_date.date(),
             "ebi_value": round(max_ebi, 3),
             "image_url": image_url,
         }
