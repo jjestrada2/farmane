@@ -487,3 +487,28 @@ class BloomPrediction(Base):
         Index("ix_bloom_predictions_map_lat_lon", "map_id", "latitude", "longitude"),
         Index("ix_bloom_predictions_map_peak", "map_id", "predicted_bloom_peak"),
     )
+
+
+class PestDiagnosis(Base):
+    __tablename__ = "pest_diagnosis"
+
+    id = Column(Integer, primary_key=True)
+    map_id = Column(String(12), ForeignKey("user_mundiai_maps.id"), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    species_detected = Column(String(255), nullable=False)
+    confidence_score = Column(Float, nullable=True)
+    recommended_treatments = Column(ARRAY(Text), nullable=True)
+    created_at = Column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+    # Relationships
+    map = relationship("MundiMap")
+
+    __table_args__ = (
+        Index("ix_pest_diagnosis_map_lat_lon", "map_id", "latitude", "longitude"),
+        Index("ix_pest_diagnosis_species", "species_detected"),
+    )
