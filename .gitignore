@@ -7,3 +7,11 @@ src/conftest.py
 *.aux.xml
 frontendts/README.md 
 *.egg-info/
+<<<<<<< HEAD
+.devdbrc
+=======
+
+# Google Earth Engine credentials
+vaulted-channel-*.json
+src/services/*.json
+>>>>>>> 916e998da3f5f66cfd256a7e87b95ba438accd94

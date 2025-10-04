@@ -78,6 +78,21 @@ from src.utils import get_async_s3_client, get_bucket_name
 from src.dependencies.postgis import get_postgis_provider
 from src.dependencies.layer_describer import LayerDescriber, get_layer_describer
 from src.dependencies.chat_completions import ChatArgsProvider, get_chat_args_provider
+
+# Ensure tool results with dates/decimals serialize cleanly for tool messages
+def _json_default(o):
+    try:
+        # Handle datetime/date-like objects
+        iso = getattr(o, "isoformat", None)
+        if callable(iso):
+            return iso()
+    except Exception:
+        pass
+    # Fallback to string for any non-serializable types (e.g., Decimal)
+    return str(o)
+
+def json_dumps_safe(obj) -> str:
+    return json.dumps(obj, default=_json_default)
 from src.dependencies.map_state import (
     MapStateProvider,
     get_map_state_provider,
@@ -117,6 +132,38 @@ redis = Redis(
     port=int(os.environ["REDIS_PORT"]),
     decode_responses=True,
 )
+
+
+async def geocode_address(address: str) -> tuple[float, float] | None:
+    """Resolve a text address to (latitude, longitude).
+
+    Uses Nominatim by default. Override with GEOCODER_URL and GEOCODER_USER_AGENT.
+    Returns None if not found or on error.
+    """
+    if not address or not isinstance(address, str):
+        return None
+    try:
+        url = os.environ.get(
+            "GEOCODER_URL", "https://nominatim.openstreetmap.org/search"
+        )
+        headers = {
+            "User-Agent": os.environ.get(
+                "GEOCODER_USER_AGENT", "mundi.ai/1.0 (geocode)"
+            )
+        }
+        params = {"q": address, "format": "jsonv2", "limit": 1}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, params=params, headers=headers)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data:
+            return None
+        lat = float(data[0]["lat"])  # type: ignore[index]
+        lon = float(data[0]["lon"])  # type: ignore[index]
+        return (lat, lon)
+    except Exception:
+        return None
 
 
 async def label_conversation_inline(conversation_id: int):
@@ -793,6 +840,44 @@ async def process_chat_interaction_task(
                             },
                         },
                     },
+                      {
+                        "type": "function",
+                        "function": {
+                            "name": "bloom_study",
+                            "description": "Analyze the last bloom event and predict the next bloom for almond crops near a given address.",
+                            "strict": True,
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "address": {
+                                        "type": "string",
+                                        "description": "Street address or location to analyze (e.g., '123 Main St, City, State').",
+                                    },
+                                },
+                                "required": ["address"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "pest_detection",
+                            "description": "Analyze the most recent bloom event and predict the next bloom for almond crops",
+                            "strict": True,
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "address": {
+                                        "type": "string",
+                                        "description": "Street address or location to analyze (e.g., '123 Main St, City, State').",
+                                    },
+                                },
+                                "required": ["address"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
                     {
                         "type": "function",
                         "function": {
@@ -1011,7 +1096,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 ),
                             )
                             continue
@@ -1037,7 +1122,7 @@ async def process_chat_interaction_task(
                             ChatCompletionToolMessageParam(
                                 role="tool",
                                 tool_call_id=tool_call.id,
-                                content=json.dumps(tool_result),
+                                content=json_dumps_safe(tool_result),
                             ),
                         )
                         continue
@@ -1046,8 +1131,345 @@ async def process_chat_interaction_task(
                         "kue.tool_call_started",
                         {"tool_name": function_name},
                     )
+
                     with tracer.start_as_current_span(f"kue.{function_name}") as span:
-                        if function_name == "new_layer_from_postgis":
+
+                        if function_name == "bloom_study":
+                            address = tool_args.get("address")
+                           
+
+                            async with kue_ephemeral_action(
+                                conversation.id,
+                                "Analyzing bloom events...",
+                            ):
+                                if not address or not isinstance(address, str) or not address.strip():
+                                    print("Invalid or missing address")
+                                    tool_result = {
+                                        "status": "error",
+                                        "error": "Missing or invalid 'address'. Provide a non-empty text address.",
+                                    }
+                                else:
+                                    print(f"Geocoding address: {address}")
+                                    cleaned_address = address.strip()
+
+                                    coords = await geocode_address(address)
+                                    if not coords:
+                                        tool_result = {
+                                            "status": "error",
+                                            "error": "Could not geocode address to coordinates",
+                                        }
+                                    else:
+                                        latitude, longitude = coords
+                                        print(f"Geocoded address to {latitude}, {longitude}")
+                                        try:
+                                            prediction_row = await conn.fetchrow(
+                                                """
+                                                  SELECT
+                                                    predicted_bloom_start ,
+                                                    predicted_bloom_peak,
+                                                    confidence
+                                                FROM bloom_predictions
+                                                WHERE latitude = $1
+                                                  AND longitude = $2
+                                                  ORDER BY created_at DESC
+                                                LIMIT 1
+                                                """,
+                                                latitude,
+                                                longitude,
+                                            )
+
+                                            print(f"Prediction row: {prediction_row}")
+
+                                            observation_row = await conn.fetchrow(
+                                                """
+                                                SELECT
+                                                    date_of_max_ebi,
+                                                    ebi_value,
+                                                    image_url
+                                                FROM bloom_observations
+                                                WHERE latitude = $1
+                                                  AND longitude = $2
+                                                ORDER BY created_at DESC
+                                                LIMIT 1
+                                                """,
+                                                latitude,
+                                                longitude,
+                                            )
+
+                                            print(f"Observation row: {observation_row}")
+
+                                            prediction = (
+                                                {
+                                                    "prediction_bloom_start": prediction_row["predicted_bloom_start"],
+                                                    "prediction_bloom_peak": prediction_row["predicted_bloom_peak"],
+                                                    "confidence": prediction_row["confidence"],
+                                                }
+                                                if prediction_row
+                                                else None
+                                                                                                    
+                                            )
+                                            print(f"Prediction: {prediction}")
+                                            observation = (
+                                                {
+                                                    "date_of_max_ebi": observation_row["date_of_max_ebi"],
+                                                    "ebi_value": observation_row["ebi_value"],
+                                                    "image_url": observation_row["image_url"],
+                                                }
+                                                if observation_row
+                                                else None
+                                            )
+                                            print(f"Observation: {observation}")
+
+                                            # Fallback: if DB has no data, call API endpoints (POST)
+                                            try:
+                                                if prediction is None or observation is None:
+                                                    transport = httpx.ASGITransport(app=request.app)
+                                                    async with httpx.AsyncClient(transport=transport, base_url="http://app") as client:
+                                                        # Call POST /api/bloom-prediction if missing
+                                                        if prediction is None:
+                                                            try:
+                                                                pred_resp = await client.post(
+                                                                    "/api/bloom-prediction",
+                                                                    json={"latitude": latitude, "longitude": longitude},
+                                                                )
+                                                                if pred_resp.status_code == 200:
+                                                                    pred_json = pred_resp.json()
+                                                                    prediction = {
+                                                                        "prediction_bloom_start": pred_json.get("predicted_bloom_start"),
+                                                                        "prediction_bloom_peak": pred_json.get("predicted_bloom_peak"),
+                                                                        "confidence": pred_json.get("confidence"),
+                                                                    }
+                                                                    print(f"Prediction fallback via endpoint: {prediction}")
+                                                                else:
+                                                                    print(f"Prediction endpoint error: {pred_resp.status_code} {pred_resp.text}")
+                                                            except Exception as e:
+                                                                print(f"Prediction endpoint call failed: {e}")
+
+                                                        # Call POST /api/bloom-detection if missing
+                                                        if observation is None:
+                                                            try:
+                                                                obs_resp = await client.post(
+                                                                    "/api/bloom-detection",
+                                                                    json={"latitude": latitude, "longitude": longitude},
+                                                                )
+                                                                if obs_resp.status_code == 200:
+                                                                    obs_json = obs_resp.json()
+                                                                    observation = {
+                                                                        "date_of_max_ebi": obs_json.get("date_of_max_ebi"),
+                                                                        "ebi_value": obs_json.get("ebi_value"),
+                                                                        "image_url": obs_json.get("image_url"),
+                                                                    }
+                                                                    print(f"Observation fallback via endpoint: {observation}")
+                                                                else:
+                                                                    print(f"Observation endpoint error: {obs_resp.status_code} {obs_resp.text}")
+                                                            except Exception as e:
+                                                                print(f"Observation endpoint call failed: {e}")
+                                            except Exception as e:
+                                                print(f"Bloom endpoint fallback wrapper failed: {e}")
+
+                                        except Exception as e:
+                                            tool_result = {
+                                                "status": "error",
+                                                "error": f"Failed to load bloom data: {str(e)}",
+                                            }
+
+                                # If we have a georeferenced image URL, add it as a raster layer to the map
+                                try:
+                                    ebi_url = None
+                                    layer_add_result = None
+                                    if observation and isinstance(observation, dict):
+                                        ebi_url = observation.get("image_url")
+
+                                    if ebi_url and isinstance(ebi_url, str) and ebi_url.startswith("http"):
+                                        # Name the layer using the observation date if available
+                                        layer_name = "Bloom EBI"
+                                        try:
+                                            if observation.get("date_of_max_ebi"):
+                                                layer_name = f"Bloom EBI {observation['date_of_max_ebi']}"
+                                        except Exception:
+                                            pass
+
+                                        # Add via the remote-layer endpoint so the DAG is preserved
+                                        async with kue_ephemeral_action(
+                                            conversation.id,
+                                            "Adding bloom raster layer to map...",
+                                            update_style_json=True,
+                                        ):
+                                            transport = httpx.ASGITransport(app=request.app)
+                                            async with httpx.AsyncClient(transport=transport, base_url="http://app") as client:
+                                                resp = await client.post(
+                                                    f"/api/maps/{map_id}/layers/remote",
+                                                    json={
+                                                        "url": ebi_url,
+                                                        "name": layer_name,
+                                                        "source_type": "raster",
+                                                        "add_layer_to_map": True,
+                                                    },
+                                                )
+                                            if resp.status_code == 200:
+                                                try:
+                                                    layer_add_result = resp.json()
+                                                except Exception:
+                                                    layer_add_result = None
+                                            else:
+                                                print(
+                                                    f"Failed to add bloom layer to map: {resp.status_code} {getattr(resp,'text', '')}"
+                                                )
+                                    else:
+                                        print("No valid bloom image URL to add as a layer.")
+                                except Exception as e:
+                                    print(f"Exception while adding bloom layer: {e}")
+
+                                
+                                tool_result = {
+                                    "status": "success",
+                                    "address": cleaned_address,
+                                    "latitude": latitude,
+                                    "longitude": longitude,
+                                    "prediction": prediction,
+                                    "observation": observation,
+                                    # Surface layer addition details for the frontend to optionally switch maps
+                                    **({
+                                        "layer_upload": layer_add_result,
+                                        "dag_child_map_id": layer_add_result.get("dag_child_map_id"),
+                                        "dag_parent_map_id": layer_add_result.get("dag_parent_map_id"),
+                                    } if layer_add_result else {}),
+                                    "message": (
+                                                    "No recent prediction or observation found for these coordinates"
+                                                    if not prediction and not observation
+                                                    else "Retrieved latest prediction and/or observation"
+                                                ),
+                                            }
+                                
+                                print(f"Tool result: {tool_result}")
+                                            
+
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json_dumps_safe(tool_result),
+                                )
+                            )
+
+                        elif function_name == "pest_detection":
+                            address = tool_args.get("address")
+                           
+
+                            async with kue_ephemeral_action(
+                                conversation.id,
+                                "Detecting pests events...",
+                            ):
+                                if not address or not isinstance(address, str) or not address.strip():
+                                    print("Invalid or missing address")
+                                    tool_result = {
+                                        "status": "error",
+                                        "error": "Missing or invalid 'address'. Provide a non-empty text address.",
+                                    }
+                                else:
+                                    print(f"Geocoding address: {address}")
+                                    cleaned_address = address.strip()
+
+                                    coords = await geocode_address(address)
+                                    if not coords:
+                                        tool_result = {
+                                            "status": "error",
+                                            "error": "Could not geocode address to coordinates",
+                                        }
+                                    else:
+                                        latitude, longitude = coords
+                                        print(f"Geocoded address to {latitude}, {longitude}")
+                                        try:
+
+                                            observation_row = await conn.fetchrow(
+                                                """
+                                                SELECT
+                                                    date_of_max_ebi,
+                                                    ebi_value,
+                                                    image_url
+                                                FROM bloom_observations
+                                                WHERE latitude = $1
+                                                  AND longitude = $2
+                                                ORDER BY created_at DESC
+                                                LIMIT 1
+                                                """,
+                                                latitude,
+                                                longitude,
+                                            )
+
+                                            print(f"Observation row: {observation_row}")
+
+                                         
+                                            observation = (
+                                                {
+                                                    "date_of_max_ebi": observation_row["date_of_max_ebi"],
+                                                    "ebi_value": observation_row["ebi_value"],
+                                                    "image_url": observation_row["image_url"],
+                                                }
+                                                if observation_row
+                                                else None
+                                            )
+                                            print(f"Observation: {observation}")
+
+                                            # Fallback: if DB has no data, call API endpoints (POST)
+                                            try:
+                                                if observation is None:
+                                                    transport = httpx.ASGITransport(app=request.app)
+                                                    async with httpx.AsyncClient(transport=transport, base_url="http://app") as client:
+                                                        # Call POST /api/bloom-prediction if missing
+
+                                                        if observation is None:
+                                                            try:
+                                                                obs_resp = await client.post(
+                                                                    "/api/bloom-detection",
+                                                                    json={"latitude": latitude, "longitude": longitude},
+                                                                )
+                                                                if obs_resp.status_code == 200:
+                                                                    obs_json = obs_resp.json()
+                                                                    observation = {
+                                                                        "date_of_max_ebi": obs_json.get("date_of_max_ebi"),
+                                                                        "ebi_value": obs_json.get("ebi_value"),
+                                                                        "image_url": obs_json.get("image_url"),
+                                                                    }
+                                                                    print(f"Observation fallback via endpoint: {observation}")
+                                                                else:
+                                                                    print(f"Observation endpoint error: {obs_resp.status_code} {obs_resp.text}")
+                                                            except Exception as e:
+                                                                print(f"Observation endpoint call failed: {e}")
+                                            except Exception as e:
+                                                print(f"Bloom endpoint fallback wrapper failed: {e}")
+
+                                            
+                                            tool_result = {
+                                                "status": "success",
+                                                "address": cleaned_address,
+                                                "latitude": latitude,
+                                                "longitude": longitude,
+                                                "observation": observation,
+                                                "message": (
+                                                    "No recent prediction or observation found for these coordinates"
+                                                    if observation
+                                                    else "Retrieved latest prediction and/or observation"
+                                                ),
+                                            }
+                                            print(f"Tool result: {tool_result}")
+                                            
+                                        except Exception as e:
+                                            tool_result = {
+                                                "status": "error",
+                                                "error": f"Failed to load bloom data: {str(e)}",
+                                            }
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json_dumps_safe(tool_result),
+                                )
+                            )                            
+
+                        elif function_name == "new_layer_from_postgis":
                             postgis_connection_id = tool_args.get(
                                 "postgis_connection_id"
                             )
@@ -1360,7 +1782,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 )
                             )
                         elif function_name == "add_layer_to_map":
@@ -1417,7 +1839,7 @@ async def process_chat_interaction_task(
                                     ChatCompletionToolMessageParam(
                                         role="tool",
                                         tool_call_id=tool_call.id,
-                                        content=json.dumps(tool_result),
+                                        content=json_dumps_safe(tool_result),
                                     )
                                 )
                         elif function_name == "query_duckdb_sql":
@@ -1445,7 +1867,7 @@ async def process_chat_interaction_task(
                                     ChatCompletionToolMessageParam(
                                         role="tool",
                                         tool_call_id=tool_call.id,
-                                        content=json.dumps(tool_result),
+                                        content=json_dumps_safe(tool_result),
                                     )
                                 )
                                 continue
@@ -1500,7 +1922,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 )
                             )
                         elif function_name == "set_layer_style":
@@ -1571,7 +1993,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 ),
                             )
                         elif function_name == "query_postgis_database":
@@ -1622,7 +2044,7 @@ async def process_chat_interaction_task(
                                                     ChatCompletionToolMessageParam(
                                                         role="tool",
                                                         tool_call_id=tool_call.id,
-                                                        content=json.dumps(tool_result),
+                                                        content=json_dumps_safe(tool_result),
                                                     ),
                                                 )
                                                 continue
@@ -1636,7 +2058,7 @@ async def process_chat_interaction_task(
                                                 ChatCompletionToolMessageParam(
                                                     role="tool",
                                                     tool_call_id=tool_call.id,
-                                                    content=json.dumps(tool_result),
+                                                    content=json_dumps_safe(tool_result),
                                                 ),
                                             )
                                             continue
@@ -1732,7 +2154,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 ),
                             )
 
@@ -1748,7 +2170,7 @@ async def process_chat_interaction_task(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
+                                    content=json_dumps_safe(tool_result),
                                 ),
                             )
                         else:
