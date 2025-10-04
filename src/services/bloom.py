@@ -18,13 +18,13 @@ def initialize_earth_engine():
         return False
 
 def mask_clouds(img):
-    """Simple cloud mask for S2"""
+    """Cloud mask for S2"""
     qa = img.select('QA60')
     cloud_mask = qa.bitwiseAnd(1 << 10).neq(0).Or(qa.bitwiseAnd(1 << 11).neq(0)).Not()
     return img.updateMask(cloud_mask).copyProperties(img, ['system:time_start'])
 
 def calculate_ebi(img):
-    """Calculate Enhanced Bloom Index"""
+    """Calculate Enhanced Bloom Index (EBI)"""
     # Scale bands to reflectance
     R = img.select('B4').multiply(1e-4)
     G = img.select('B3').multiply(1e-4) 
@@ -55,20 +55,18 @@ def extract_ebi_mean(img, roi):
         'timestamp': img.date().millis()
     })
 
-def get_ebi_geotiff(s2_collection, peak_date, roi):
-    """Download EBI data from GEE and upload directly to Google Drive with color visualization"""
+def get_ebi_geotiff_url(s2_collection, peak_date, roi):
+    """Peak EBI GeoTIFF URL from GEE"""
     try:                
-        # Filter collection to get the peak day image
+        # Filter collection
         peak_date_str = peak_date.strftime('%Y-%m-%d')
         peak_day_start = ee.Date(peak_date_str)
         peak_day_end = peak_day_start.advance(1, 'day')
         
         peak_image = s2_collection.filterDate(peak_day_start, peak_day_end).first()
         
-        # Get EBI data and min/max values for proper scaling
         export_image = peak_image.select('EBI').clip(roi)
-        
-        # Get min/max values for visualization scaling
+        # Get min/max values for scaling
         minMax = export_image.reduceRegion(
             reducer=ee.Reducer.minMax(),
             geometry=roi,
@@ -82,14 +80,14 @@ def get_ebi_geotiff(s2_collection, peak_date, roi):
         
         color_palette = ['0d0887', '6300a7', 'ab2494', 'e34f6f', 'fb9f3a', 'f0f921']
         
-        # Create RGB visualization
+        # Create scaled visualization
         rgb_image = export_image.visualize(
             min=ebi_min,
             max=ebi_max,
             palette=color_palette
         )
         
-        # Get download URL for the RGB image
+        # Get download URL
         url = rgb_image.getDownloadURL({
             'scale': 10,
             'crs': 'EPSG:4326',
@@ -104,7 +102,7 @@ def get_ebi_geotiff(s2_collection, peak_date, roi):
         return None
 
 async def detect_bloom(latitude: float, longitude: float) -> Dict[str, Any]:
-    """Detect bloom peak date and EBI value for a given lat/lon using Sentinel-2 data.
+    """Detect bloom peak date and EBI value for a given lat/lon using Sentinel-2 data
 
     Args:
         latitude: Latitude coordinate
@@ -116,7 +114,7 @@ async def detect_bloom(latitude: float, longitude: float) -> Dict[str, Any]:
         - longitude: Input longitude 
         - date_of_max_ebi: Date of peak bloom
         - ebi_value: Peak EBI value
-        - image_url: Placeholder for future implementation
+        - image_url: Peak EBI GeoTIFF URL from GEE
     """
     try:
         # Initialize Earth Engine
@@ -183,7 +181,7 @@ async def detect_bloom(latitude: float, longitude: float) -> Dict[str, Any]:
             raise Exception("Could not determine peak bloom date")
         
         # Get EBI GeoTIFF URL
-        image_url = get_ebi_geotiff(s2_collection, peak_date, roi)
+        image_url = get_ebi_geotiff_url(s2_collection, peak_date, roi)
         
         return {
             "latitude": latitude,
@@ -194,7 +192,6 @@ async def detect_bloom(latitude: float, longitude: float) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        # Return fallback data if analysis fails
         # print(f"Bloom detection failed: {e}")
         return {
             "latitude": latitude,
