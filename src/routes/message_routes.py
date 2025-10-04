@@ -1267,27 +1267,83 @@ async def process_chat_interaction_task(
                                             except Exception as e:
                                                 print(f"Bloom endpoint fallback wrapper failed: {e}")
 
-                                            
-                                            tool_result = {
-                                                "status": "success",
-                                                "address": cleaned_address,
-                                                "latitude": latitude,
-                                                "longitude": longitude,
-                                                "prediction": prediction,
-                                                "observation": observation,
-                                                "message": (
-                                                    "No recent prediction or observation found for these coordinates"
-                                                    if not prediction and not observation
-                                                    else "Retrieved latest prediction and/or observation"
-                                                ),
-                                            }
-                                            print(f"Tool result: {tool_result}")
-                                            
                                         except Exception as e:
                                             tool_result = {
                                                 "status": "error",
                                                 "error": f"Failed to load bloom data: {str(e)}",
                                             }
+
+                                # If we have a georeferenced image URL, add it as a raster layer to the map
+                                try:
+                                    ebi_url = None
+                                    layer_add_result = None
+                                    if observation and isinstance(observation, dict):
+                                        ebi_url = observation.get("image_url")
+
+                                    if ebi_url and isinstance(ebi_url, str) and ebi_url.startswith("http"):
+                                        # Name the layer using the observation date if available
+                                        layer_name = "Bloom EBI"
+                                        try:
+                                            if observation.get("date_of_max_ebi"):
+                                                layer_name = f"Bloom EBI {observation['date_of_max_ebi']}"
+                                        except Exception:
+                                            pass
+
+                                        # Add via the remote-layer endpoint so the DAG is preserved
+                                        async with kue_ephemeral_action(
+                                            conversation.id,
+                                            "Adding bloom raster layer to map...",
+                                            update_style_json=True,
+                                        ):
+                                            transport = httpx.ASGITransport(app=request.app)
+                                            async with httpx.AsyncClient(transport=transport, base_url="http://app") as client:
+                                                resp = await client.post(
+                                                    f"/api/maps/{map_id}/layers/remote",
+                                                    json={
+                                                        "url": ebi_url,
+                                                        "name": layer_name,
+                                                        "source_type": "raster",
+                                                        "add_layer_to_map": True,
+                                                    },
+                                                )
+                                            if resp.status_code == 200:
+                                                try:
+                                                    layer_add_result = resp.json()
+                                                except Exception:
+                                                    layer_add_result = None
+                                            else:
+                                                print(
+                                                    f"Failed to add bloom layer to map: {resp.status_code} {getattr(resp,'text', '')}"
+                                                )
+                                    else:
+                                        print("No valid bloom image URL to add as a layer.")
+                                except Exception as e:
+                                    print(f"Exception while adding bloom layer: {e}")
+
+                                
+                                tool_result = {
+                                    "status": "success",
+                                    "address": cleaned_address,
+                                    "latitude": latitude,
+                                    "longitude": longitude,
+                                    "prediction": prediction,
+                                    "observation": observation,
+                                    # Surface layer addition details for the frontend to optionally switch maps
+                                    **({
+                                        "layer_upload": layer_add_result,
+                                        "dag_child_map_id": layer_add_result.get("dag_child_map_id"),
+                                        "dag_parent_map_id": layer_add_result.get("dag_parent_map_id"),
+                                    } if layer_add_result else {}),
+                                    "message": (
+                                                    "No recent prediction or observation found for these coordinates"
+                                                    if not prediction and not observation
+                                                    else "Retrieved latest prediction and/or observation"
+                                                ),
+                                            }
+                                
+                                print(f"Tool result: {tool_result}")
+                                            
+
 
                             await add_chat_completion_message(
                                 ChatCompletionToolMessageParam(
