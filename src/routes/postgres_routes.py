@@ -1800,7 +1800,25 @@ async def add_remote_layer(
                     )
                 content = await resp.read()
 
-        filename = Path(parsed.path).name or f"remote_file{ext}"
+        # Choose a filename with an extension that hints the correct type
+        # Many services (e.g., Earth Engine getPixels) return files without extensions
+        # If the caller declared 'raster' and the URL lacks a raster extension, default to .tif
+        filename_only = Path(parsed.path).name or "remote_file"
+        chosen_ext = ext
+        if declared == "raster" and (not chosen_ext or chosen_ext.lower() not in RASTER_EXTS):
+            # Try infer from Content-Type header first
+            ct = resp.headers.get("Content-Type", "").lower() if 'resp' in locals() else ""
+            if "tif" in ct or "geotiff" in ct or "geotif" in ct:
+                chosen_ext = ".tif"
+            elif "png" in ct:
+                chosen_ext = ".png"
+            elif "jpeg" in ct or "jpg" in ct:
+                chosen_ext = ".jpg"
+            else:
+                # Default to GeoTIFF so GDAL can compute bounds/CRS
+                chosen_ext = ".tif"
+
+        filename = filename_only if filename_only.lower().endswith(chosen_ext) else f"{filename_only}{chosen_ext}"
         file_obj = UploadFile(
             file=BytesIO(content),
             filename=filename,

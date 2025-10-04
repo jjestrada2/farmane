@@ -27,6 +27,7 @@ from src.routes import (
     conversation_routes,
 )
 from src.routes import bloom_routes
+from src.routes import pest_routes
 from src.routes.postgres_routes import basemap_router
 from src.routes.layer_router import layer_router
 from src.routes.attribute_table import attribute_table_router
@@ -97,6 +98,11 @@ app.include_router(
     bloom_routes.router,
     prefix="/api",
     tags=["Bloom"],
+)
+app.include_router(
+    pest_routes.router,
+    prefix="/api",
+    tags=["Pest"],
 )
 
 
