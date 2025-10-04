@@ -49,6 +49,11 @@ services:
       # - OPENAI_API_KEY=ollama
       # - OPENAI_MODEL=orieg/gemma3-tools:1b
       #-  MUNDI_EMBED_ALLOWED_ORIGINS=http://localhost:4321
+      - SERVICE_ACCOUNT_EMAIL=${SERVICE_ACCOUNT_EMAIL}
+      - GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/ee_key.json
+      - PROJECT_ID=${PROJECT_ID}
+    secrets:
+      - ee_key.json
     command: uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors
     volumes:
       - ./src:/app/src
@@ -95,9 +100,10 @@ services:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mundiuser -d mundidb"]
-      interval: 1s
-      timeout: 5s
+      interval: 5s
+      timeout: 10s
       retries: 10
+      start_period: 20s
 
 
   redis:
@@ -141,3 +147,7 @@ services:
     depends_on:
       app:
         condition: service_started
+
+secrets:
+  ee_key.json:
+    file: ./credentials/maps-474019-bada68336a2f.json

@@ -44,6 +44,7 @@ async def bloom_detection(
 class BloomPredictionRequest(BaseModel):
     latitude: float = Field(..., description="Latitude of the orchard location")
     longitude: float = Field(..., description="Longitude of the orchard location")
+    year: int = Field(2026, description="Year for which to predict bloom (e.g., 2026)")
 
 
 class BloomPredictionResponse(BaseModel):
@@ -60,4 +61,4 @@ async def bloom_prediction(
     session: UserContext = Depends(verify_session_required),
 ):
     # Dummy implementation via service stub
-    return await predict_bloom(request.latitude, request.longitude)
+    return await predict_bloom(lat=request.latitude, lon=request.longitude, year=request.year)
