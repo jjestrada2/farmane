@@ -1124,14 +1124,16 @@ async def process_chat_interaction_task(
                                 "Analyzing bloom events...",
                             ):
                                 if not address or not isinstance(address, str) or not address.strip():
+                                    print("Invalid or missing address")
                                     tool_result = {
                                         "status": "error",
                                         "error": "Missing or invalid 'address'. Provide a non-empty text address.",
                                     }
                                 else:
+                                    print(f"Geocoding address: {address}")
                                     cleaned_address = address.strip()
 
-                                    coords = await geocode_address(cleaned_address)
+                                    coords = await geocode_address(address)
                                     if not coords:
                                         tool_result = {
                                             "status": "error",
@@ -1198,6 +1200,54 @@ async def process_chat_interaction_task(
                                                 else None
                                             )
                                             print(f"Observation: {observation}")
+
+                                            # Fallback: if DB has no data, call API endpoints (POST)
+                                            try:
+                                                if prediction is None or observation is None:
+                                                    transport = httpx.ASGITransport(app=request.app)
+                                                    async with httpx.AsyncClient(transport=transport, base_url="http://app") as client:
+                                                        # Call POST /api/bloom-prediction if missing
+                                                        if prediction is None:
+                                                            try:
+                                                                pred_resp = await client.post(
+                                                                    "/api/bloom-prediction",
+                                                                    json={"latitude": latitude, "longitude": longitude},
+                                                                )
+                                                                if pred_resp.status_code == 200:
+                                                                    pred_json = pred_resp.json()
+                                                                    prediction = {
+                                                                        "prediction_bloom_start": pred_json.get("predicted_bloom_start"),
+                                                                        "prediction_bloom_peak": pred_json.get("predicted_bloom_peak"),
+                                                                        "confidence": pred_json.get("confidence"),
+                                                                    }
+                                                                    print(f"Prediction fallback via endpoint: {prediction}")
+                                                                else:
+                                                                    print(f"Prediction endpoint error: {pred_resp.status_code} {pred_resp.text}")
+                                                            except Exception as e:
+                                                                print(f"Prediction endpoint call failed: {e}")
+
+                                                        # Call POST /api/bloom-detection if missing
+                                                        if observation is None:
+                                                            try:
+                                                                obs_resp = await client.post(
+                                                                    "/api/bloom-detection",
+                                                                    json={"latitude": latitude, "longitude": longitude},
+                                                                )
+                                                                if obs_resp.status_code == 200:
+                                                                    obs_json = obs_resp.json()
+                                                                    observation = {
+                                                                        "date_of_max_ebi": obs_json.get("date_of_max_ebi"),
+                                                                        "ebi_value": obs_json.get("ebi_value"),
+                                                                        "image_url": obs_json.get("image_url"),
+                                                                    }
+                                                                    print(f"Observation fallback via endpoint: {observation}")
+                                                                else:
+                                                                    print(f"Observation endpoint error: {obs_resp.status_code} {obs_resp.text}")
+                                                            except Exception as e:
+                                                                print(f"Observation endpoint call failed: {e}")
+                                            except Exception as e:
+                                                print(f"Bloom endpoint fallback wrapper failed: {e}")
+
                                             
                                             tool_result = {
                                                 "status": "success",
