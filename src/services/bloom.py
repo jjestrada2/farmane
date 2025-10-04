@@ -17,6 +17,10 @@ def initialize_earth_engine():
         # print(f"Earth Engine initialization failed: {e}")
         return False
 
+def filter_cloudy_images(s2_collection, cloud_threshold=90):
+    """Filter out images with high cloud percentage"""
+    return s2_collection.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud_threshold))
+
 def mask_clouds(img):
     """Cloud mask for S2"""
     qa = img.select('QA60')
@@ -156,6 +160,9 @@ async def detect_bloom(latitude: float, longitude: float) -> Dict[str, Any]:
             
             if num_images == 0:
                 raise Exception("No Sentinel-2 data available for the location")
+
+        #Filter out cloudy images
+        s2_collection = filter_cloudy_images(s2_collection, cloud_threshold=75)
         
         # Extract time series
         time_series_fc = s2_collection.map(lambda img: extract_ebi_mean(img, roi)).filter(ee.Filter.notNull(['mean_ebi']))
