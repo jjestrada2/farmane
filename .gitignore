@@ -7,3 +7,4 @@ src/conftest.py
 *.aux.xml
 frontendts/README.md 
 *.egg-info/
+.devdbrc
